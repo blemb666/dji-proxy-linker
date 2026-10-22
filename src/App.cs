@@ -2,6 +2,7 @@
 //
 // Аргументы командной строки (так же работает перетаскивание файлов на exe / «Отправить»):
 //   DjiProxyLinker.exe [--copy | --undo] [--run] <папки/файлы...>
+//   (пункт контекстного меню папок, который ставит установщик, вызывает "--run <папка>")
 //   --run                      сразу запустить обработку без нажатия кнопки
 //   --screenshot <png> [empty] отрендерить окно в PNG (для README)
 
@@ -22,13 +23,6 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
-[assembly: AssemblyTitle("DJI Proxy Linker")]
-[assembly: AssemblyProduct("DJI Proxy Linker")]
-[assembly: AssemblyDescription("Links DJI .LRF proxy files for DaVinci Resolve")]
-[assembly: AssemblyCopyright("Apache License 2.0")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-
 namespace DjiProxyLinker
 {
     public sealed class LogEntry
@@ -41,7 +35,8 @@ namespace DjiProxyLinker
 
     static class Program
     {
-        public const string Version = "1.0.0";
+        // Версию задаёт build.ps1 -Version (в CI — из тега релиза)
+        public static readonly string Version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
         public const string SponsorUrl = "https://t.me/adam_editing_page";
         public const string RepoUrl = "https://github.com/blemb666/dji-proxy-linker";
 

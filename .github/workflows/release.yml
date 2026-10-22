@@ -1,0 +1,67 @@
+# Сборка exe и установщика.
+#   git tag v1.2.3 && git push origin v1.2.3  → собирает и публикует релиз v1.2.3
+#   Actions → Build → Run workflow            → только сборка, файлы в артефактах запуска
+
+name: Build
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия для тестовой сборки'
+        default: '0.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $v = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '${{ inputs.version }}' }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      # build.ps1 рендерит иконку через WPF — нужен Windows PowerShell 5.1, а не pwsh
+      - name: Build
+        shell: powershell
+        run: .\build.ps1 -Version ${{ steps.version.outputs.value }} -Installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DjiProxyLinker-${{ steps.version.outputs.value }}
+          path: |
+            dist/DjiProxyLinker.exe
+            dist/DjiProxyLinker-Setup-*.exe
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.version.outputs.value }}'
+          $setup = "dist/DjiProxyLinker-Setup-$v.exe"
+          $notes = (Get-Content .github/release-notes.md -Raw).Replace('{VERSION}', $v)
+          $notes += "`n`n**SHA-256**`n``````"
+          foreach ($f in $setup, 'dist/DjiProxyLinker.exe') {
+            $notes += "`n$((Get-FileHash $f -Algorithm SHA256).Hash)  $(Split-Path $f -Leaf)"
+          }
+          $notes += "`n``````"
+          Set-Content notes.md $notes
+          gh release create $env:GITHUB_REF_NAME $setup dist/DjiProxyLinker.exe `
+            --title "DJI Proxy Linker v$v" --notes-file notes.md --verify-tag

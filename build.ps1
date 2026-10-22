@@ -1,7 +1,15 @@
 # Сборка DjiProxyLinker.exe без Visual Studio и без установки чего-либо:
 # используется csc.exe из .NET Framework 4.x, который есть в любой Windows 10/11.
 #
-#   powershell -ExecutionPolicy Bypass -File build.ps1
+#   powershell -ExecutionPolicy Bypass -File build.ps1 [-Version 1.2.3] [-Installer]
+#
+# -Installer дополнительно собирает установщик (нужен Inno Setup 6: https://jrsoftware.org/isdl.php)
+
+param(
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [string]$Version = '1.0.0',
+    [switch]$Installer
+)
 
 $ErrorActionPreference = 'Stop'
 $root  = $PSScriptRoot
@@ -46,13 +54,39 @@ foreach ($f in $frames) { $w.Write($f.Bytes) }
 $w.Close()
 [IO.File]::WriteAllBytes((Join-Path $build 'icon-256.png'), $frames[-1].Bytes)
 
-# 2. Компиляция
+# 2. Версия и свойства файла
+$assemblyInfo = Join-Path $build 'AssemblyInfo.cs'
+@"
+using System.Reflection;
+[assembly: AssemblyTitle("DJI Proxy Linker")]
+[assembly: AssemblyProduct("DJI Proxy Linker")]
+[assembly: AssemblyDescription("Links DJI .LRF proxy files for DaVinci Resolve")]
+[assembly: AssemblyCopyright("Apache License 2.0")]
+[assembly: AssemblyVersion("$Version.0")]
+[assembly: AssemblyFileVersion("$Version.0")]
+"@ | Set-Content -Encoding UTF8 $assemblyInfo
+
+# 3. Компиляция
 $out = Join-Path $dist 'DjiProxyLinker.exe'
 & $csc /nologo /codepage:65001 /optimize+ /target:winexe /langversion:5 `
     "/out:$out" "/win32icon:$ico" `
     "/lib:$wpf" /r:PresentationFramework.dll /r:PresentationCore.dll /r:WindowsBase.dll /r:System.Xaml.dll `
     "/resource:$(Join-Path $root 'src\MainWindow.xaml'),MainWindow.xaml" `
-    (Join-Path $root 'src\*.cs')
+    (Join-Path $root 'src\*.cs') $assemblyInfo
 if ($LASTEXITCODE -ne 0) { throw "csc завершился с ошибкой $LASTEXITCODE" }
+Write-Host "OK: $out v$Version ($([math]::Round((Get-Item $out).Length / 1KB)) KB)"
 
-Write-Host "OK: $out ($([math]::Round((Get-Item $out).Length / 1KB)) KB)"
+# 4. Установщик
+if ($Installer) {
+    $iscc = @(
+        (Get-Command iscc.exe -ErrorAction SilentlyContinue | ForEach-Object Source),
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if (-not $iscc) { throw 'Не найден Inno Setup 6 (ISCC.exe): https://jrsoftware.org/isdl.php' }
+
+    & $iscc /Q "/DAppVersion=$Version" "/O$dist" (Join-Path $root 'installer\DjiProxyLinker.iss')
+    if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с ошибкой $LASTEXITCODE" }
+    Write-Host "OK: $(Join-Path $dist "DjiProxyLinker-Setup-$Version.exe")"
+}

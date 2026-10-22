@@ -39,25 +39,34 @@ DJI_001\
 - **Три режима:** перенести (мгновенно, без лишнего места) · скопировать (LRF остаются на месте) · откатить обратно в `.LRF`
 - Расширение прокси совпадает с исходником (`.MP4` / `.MOV`), чтобы Resolve точно сопоставил имена
 - Повторный запуск безопасен: уже готовые прокси пропускаются
-- Один файл ~100 КБ, без установки — работает на встроенном в Windows .NET Framework 4.8
+- **ПКМ по папке → «Создать прокси для DaVinci»** — без открытия программы (ставится установщиком)
+- Около 100 КБ, работает на встроенном в Windows .NET Framework 4.8 — ничего доустанавливать не нужно
+
+## Установка
+
+Скачайте со страницы [последнего релиза](https://github.com/blemb666/dji-proxy-linker/releases/latest):
+
+| Файл | Для кого |
+|---|---|
+| `DjiProxyLinker-Setup-x.y.z.exe` | **рекомендуется** — ярлык в «Пуске», пункт в контекстном меню папок и дисков, ярлык в «Отправить», удаление через «Приложения». Права администратора не нужны |
+| `DjiProxyLinker.exe` | portable — один файл, без установки |
+
+> Windows может показать «Система Windows защитила ваш компьютер», потому что файлы пока не подписаны.
+> Нажмите **Подробнее → Выполнить в любом случае**. Исходный код целиком открыт в этом репозитории.
 
 ## Как пользоваться
 
-1. Скачайте `DjiProxyLinker.exe` со страницы [Releases](https://github.com/blemb666/dji-proxy-linker/releases) (или [соберите сами](#сборка)).
-2. Скопируйте видео с карты на диск.
-3. Перетащите папку с видео в окно программы и нажмите **«Создать прокси»**.
-4. Импортируйте папку в DaVinci Resolve — прокси подтянутся автоматически.
+1. Скопируйте видео с карты на диск.
+2. Нажмите правой кнопкой по папке → **«Создать прокси для DaVinci»**.
+   Или перетащите папку в окно программы и нажмите **«Создать прокси»**.
+3. Импортируйте папку в DaVinci Resolve — прокси подтянутся автоматически.
    Если клипы уже были в проекте: **Media Pool → ПКМ по клипам → Link Proxy Media** и укажите папку.
 
-> Windows может показать «Система Windows защитила ваш компьютер», потому что exe не подписан.
-> Нажмите **Подробнее → Выполнить в любом случае**. Исходный код целиком открыт в этом репозитории.
+> В Windows 11 пункт находится в **«Показать дополнительные параметры»** (или `Shift+F10`) —
+> новое компактное меню закрыто для обычных программ.
+> Чтобы обработать сразу несколько папок, выделите их и используйте **Отправить → DJI Proxy Linker**.
 
 **Горячие клавиши:** `Ctrl+O` — выбрать папки · `Enter` — запустить · `Esc` — очистить.
-
-### Через меню «Отправить»
-
-Нажмите `Win+R`, введите `shell:sendto` и положите туда ярлык на `DjiProxyLinker.exe`.
-Теперь: ПКМ по папке → **Отправить** → DjiProxyLinker.
 
 ### Командная строка
 
@@ -76,10 +85,16 @@ DjiProxyLinker.exe [--copy | --undo] [--run] <папки или файлы...>
 Нужна только Windows 10/11 — компилятор C# уже встроен в .NET Framework.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.2.3            # только exe
+powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.2.3 -Installer # + установщик
 ```
 
-Готовый файл появится в `dist\DjiProxyLinker.exe`.
+Результат — в `dist\`. Для установщика нужен [Inno Setup 6](https://jrsoftware.org/isdl.php).
+
+**Релизы собираются автоматически** в GitHub Actions: достаточно отправить тег —
+`git tag v1.2.3 && git push origin v1.2.3`. Через пару минут на странице Releases появятся
+установщик и portable-exe с контрольными суммами. Тестовая сборка без релиза:
+Actions → Build → Run workflow.
 
 | Файл | Что внутри |
 |---|---|
@@ -88,6 +103,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 | `src/MainWindow.xaml` | разметка и стили интерфейса (WPF) |
 | `src/Icon.xaml` | векторная иконка, при сборке рендерится в `.ico` |
 | `src/FolderPicker.cs` | современный диалог выбора нескольких папок |
+| `installer/DjiProxyLinker.iss` | установщик Inno Setup и пункт контекстного меню |
+| `.github/workflows/release.yml` | сборка и публикация релизов по тегу |
 
 ## Поддержать
 
@@ -106,7 +123,9 @@ It moves (or copies) each `NAME.LRF` to `Proxy\NAME.MP4` next to the original, s
 
 - Drag & drop folders onto the window or the `.exe`; subfolders are processed recursively
 - Modes: move (instant), copy, undo
-- Single ~100 KB executable, no installer, runs on the .NET Framework 4.8 that ships with Windows 10/11
+- Installer adds a "Create proxies for DaVinci" item to the folder context menu; a portable exe is also available
+- ~100 KB, runs on the .NET Framework 4.8 that ships with Windows 10/11
+- Releases are built by GitHub Actions on every `v*.*.*` tag
 - Build: `powershell -ExecutionPolicy Bypass -File build.ps1`
 
 Sponsored by [Adam Editing on Telegram](https://t.me/adam_editing_page).
