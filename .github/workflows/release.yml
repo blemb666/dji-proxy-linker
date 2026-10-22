@@ -1,6 +1,10 @@
 # Сборка exe и установщика.
 #   git tag v1.2.3 && git push origin v1.2.3  → собирает и публикует релиз v1.2.3
 #   Actions → Build → Run workflow            → только сборка, файлы в артефактах запуска
+#
+# Подпись (SignPath Foundation) включается сама, когда в настройках репозитория заданы
+# переменная SIGNPATH_ORGANIZATION_ID и секрет SIGNPATH_API_TOKEN — см. docs/SIGNING.md.
+# Подписываются только релизы по тегу: каждый запрос подписи вручную одобряется в SignPath.
 
 name: Build
 
@@ -15,10 +19,13 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      SIGN: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' && github.ref_type == 'tag' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,9 +44,79 @@ jobs:
           }
 
       # build.ps1 рендерит иконку через WPF — нужен Windows PowerShell 5.1, а не pwsh
-      - name: Build
+      - name: Build exe
         shell: powershell
-        run: .\build.ps1 -Version ${{ steps.version.outputs.value }} -Installer
+        run: .\build.ps1 -Version ${{ steps.version.outputs.value }}
+
+      # --- подпись exe (до упаковки, чтобы в установщик попал уже подписанный файл) ---
+      - name: Upload unsigned exe
+        id: unsigned-exe
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: dist/DjiProxyLinker.exe
+
+      - name: Sign exe
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'dji-proxy-linker' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.unsigned-exe.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: dist
+
+      - name: Build installer
+        shell: powershell
+        run: .\build.ps1 -Version ${{ steps.version.outputs.value }} -InstallerOnly
+
+      # --- подпись установщика (имя без версии, чтобы конфигурация в SignPath была постоянной) ---
+      - name: Prepare installer for signing
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory signing | Out-Null
+          Copy-Item "dist/DjiProxyLinker-Setup-${{ steps.version.outputs.value }}.exe" signing/DjiProxyLinker-Setup.exe
+
+      - name: Upload unsigned installer
+        id: unsigned-installer
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: signing/DjiProxyLinker-Setup.exe
+
+      - name: Sign installer
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'dji-proxy-linker' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Use signed installer
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: Copy-Item signed/DjiProxyLinker-Setup.exe "dist/DjiProxyLinker-Setup-${{ steps.version.outputs.value }}.exe" -Force
+
+      - name: Check signatures
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          foreach ($f in Get-ChildItem dist/*.exe) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            "$($f.Name): $($sig.Status) — $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { throw "$($f.Name) не подписан" }
+          }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -56,7 +133,12 @@ jobs:
         run: |
           $v = '${{ steps.version.outputs.value }}'
           $setup = "dist/DjiProxyLinker-Setup-$v.exe"
-          $notes = (Get-Content .github/release-notes.md -Raw).Replace('{VERSION}', $v)
+          $smartscreen = if ($env:SIGN -eq 'true') {
+            'Файлы подписаны (сертификат SignPath Foundation). Если Windows всё же покажет предупреждение, нажмите **Подробнее → Выполнить в любом случае**.'
+          } else {
+            'Если появится «Система Windows защитила ваш компьютер» — нажмите **Подробнее → Выполнить в любом случае** (файлы пока не подписаны, исходный код открыт).'
+          }
+          $notes = (Get-Content .github/release-notes.md -Raw).Replace('{VERSION}', $v).Replace('{SMARTSCREEN}', $smartscreen)
           $notes += "`n`n**SHA-256**`n``````"
           foreach ($f in $setup, 'dist/DjiProxyLinker.exe') {
             $notes += "`n$((Get-FileHash $f -Algorithm SHA256).Hash)  $(Split-Path $f -Leaf)"

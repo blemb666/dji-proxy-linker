@@ -53,6 +53,7 @@ DJI_001\
 
 > Windows может показать «Система Windows защитила ваш компьютер», потому что файлы пока не подписаны.
 > Нажмите **Подробнее → Выполнить в любом случае**. Исходный код целиком открыт в этом репозитории.
+> Подробнее о подписи — в разделе [Code signing policy](#code-signing-policy).
 
 ## Как пользоваться
 
@@ -104,7 +105,23 @@ Actions → Build → Run workflow.
 | `src/Icon.xaml` | векторная иконка, при сборке рендерится в `.ico` |
 | `src/FolderPicker.cs` | современный диалог выбора нескольких папок |
 | `installer/DjiProxyLinker.iss` | установщик Inno Setup и пункт контекстного меню |
-| `.github/workflows/release.yml` | сборка и публикация релизов по тегу |
+| `.github/workflows/release.yml` | сборка, подпись и публикация релизов по тегу |
+| `.signpath/` | конфигурации подписи для SignPath ([как включить подпись](docs/SIGNING.md)) |
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+*(Бесплатная подпись кода — от SignPath.io, сертификат — от SignPath Foundation. Заявка на подпись подана; до её одобрения релизы выходят неподписанными.)*
+
+Подписываются только файлы, которые собраны в [GitHub Actions](.github/workflows/release.yml) из исходного кода этого репозитория. Каждый релиз перед подписью вручную одобряет ответственный за подпись.
+
+| Роль | Участники |
+|---|---|
+| Committers and reviewers (авторы и ревьюеры) | [blemb666](https://github.com/blemb666) |
+| Approvers (одобряют подпись релизов) | [blemb666](https://github.com/blemb666) |
+
+**Privacy policy.** This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+*(Программа ничего не отправляет в сеть. Единственное исключение — ссылки на GitHub и Telegram в окне: они открываются в браузере только по нажатию.)*
 
 ## Поддержать
 
