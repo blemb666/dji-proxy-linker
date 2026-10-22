@@ -1,0 +1,25 @@
+<Viewbox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+         Width="256" Height="256" Stretch="Uniform">
+  <!-- DJI Proxy Linker: amber tile, source frame (outline) linked to a proxy frame (solid, with play) -->
+  <Canvas Width="256" Height="256">
+    <Canvas.Resources>
+      <LinearGradientBrush x:Key="TileFill" StartPoint="0,8" EndPoint="0,248" MappingMode="Absolute">
+        <GradientStop Color="#FFF7B85E" Offset="0"/>
+        <GradientStop Color="#FFEC9431" Offset="1"/>
+      </LinearGradientBrush>
+    </Canvas.Resources>
+    <!-- Tile -->
+    <Rectangle Canvas.Left="8" Canvas.Top="8" Width="240" Height="240" RadiusX="56" RadiusY="56"
+               Fill="{StaticResource TileFill}"/>
+    <!-- Source frame (outline) -->
+    <Rectangle Canvas.Left="38" Canvas.Top="54" Width="144" Height="104" RadiusX="22" RadiusY="22"
+               Stroke="#FF1C1306" StrokeThickness="20" Fill="Transparent"/>
+    <!-- Proxy frame (solid), cut out of the source frame by a tile-coloured ring -->
+    <Rectangle Canvas.Left="98" Canvas.Top="110" Width="124" Height="92" RadiusX="20" RadiusY="20"
+               Fill="#FF1C1306" Stroke="{StaticResource TileFill}" StrokeThickness="16"/>
+    <!-- Play mark -->
+    <Path Fill="#FFF5AD4F"
+          Data="M 146,140 L 146,172 C 146,177 151,180 155,177 L 178,161 C 182,158 182,154 178,151 L 155,135 C 151,132 146,135 146,140 Z"/>
+  </Canvas>
+</Viewbox>
