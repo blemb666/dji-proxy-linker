@@ -4,7 +4,7 @@
 
 # DJI Proxy Linker
 
-**Готовые прокси с DJI Pocket / Osmo / дронов — в DaVinci Resolve за один клик**
+**Готовые прокси с DJI Pocket / Osmo / дронов и камер Sony — в DaVinci Resolve за один клик**
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows)
@@ -33,11 +33,30 @@ DJI_001\
     └── DJI_20261022121502_0041_D.MP4 ◄┘  ← прокси для Resolve
 ```
 
+### Камеры Sony
+
+Камеры Sony с включённой записью прокси (α7 IV, α7S III, FX3, FX30, ZV-E1 и др.) кладут прокси в отдельную папку
+`SUB` с суффиксом `S03` в имени. Программа переносит их в `CLIP\Proxy` под именем исходника:
+
+```
+PRIVATE\M4ROOT\
+├── CLIP\
+│   ├── C0001.MP4                  ← оригинал
+│   └── Proxy\
+│       └── C0001.MP4  ◄─┐         ← прокси для Resolve
+└── SUB\                 │  перенос + переименование
+    └── C0001S03.MP4  ───┘
+```
+
+Прокси без исходника в `CLIP` не трогаются. Откат возвращает файлы обратно в `SUB` с прежними именами.
+
 ## Возможности
 
-- **Перетащите** папки (хоть всю карту `DCIM`) в окно или на значок `.exe` — подпапки обрабатываются рекурсивно
-- **Три режима:** перенести (мгновенно, без лишнего места) · скопировать (LRF остаются на месте) · откатить обратно в `.LRF`
-- Расширение прокси совпадает с исходником (`.MP4` / `.MOV`), чтобы Resolve точно сопоставил имена
+- **Перетащите** папки (хоть всю карту `DCIM` или `PRIVATE`) в окно или на значок `.exe` — подпапки обрабатываются рекурсивно
+- **DJI и Sony** на одной карте или в одной папке проекта — распознаются автоматически
+- **Три режима:** перенести (мгновенно, без лишнего места) · скопировать (прокси остаются на месте) · откатить обратно
+- Расширение прокси DJI совпадает с исходником (`.MP4` / `.MOV`), чтобы Resolve точно сопоставил имена
+- Служебные файлы macOS (`._*`) на картах игнорируются
 - Повторный запуск безопасен: уже готовые прокси пропускаются
 - **ПКМ по папке → «Создать прокси для DaVinci»** — без открытия программы (ставится установщиком)
 - Около 100 КБ, работает на встроенном в Windows .NET Framework 4.8 — ничего доустанавливать не нужно
@@ -77,8 +96,8 @@ DjiProxyLinker.exe [--copy | --undo] [--run] <папки или файлы...>
 
 | Флаг | Что делает |
 |---|---|
-| `--copy` | копировать LRF вместо переноса |
-| `--undo` | вернуть `Proxy\*.MP4` обратно в `*.LRF` |
+| `--copy` | копировать прокси вместо переноса |
+| `--undo` | вернуть прокси из `Proxy` обратно (в `*.LRF` или в `SUB`) |
 | `--run` | сразу запустить обработку, без нажатия кнопки |
 
 ## Сборка
@@ -135,8 +154,9 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 
 ## English
 
-**DJI Proxy Linker** turns the `.LRF` low-res files that DJI cameras record next to every clip into proxies DaVinci Resolve picks up automatically.
+**DJI Proxy Linker** turns the low-res proxy files that DJI and Sony cameras record next to every clip into proxies DaVinci Resolve picks up automatically.
 It moves (or copies) each `NAME.LRF` to `Proxy\NAME.MP4` next to the original, so Resolve links it on import — no proxy rendering needed.
+Sony proxies (`SUB\C0001S03.MP4`) are moved to `CLIP\Proxy\C0001.MP4` the same way.
 
 - Drag & drop folders onto the window or the `.exe`; subfolders are processed recursively
 - Modes: move (instant), copy, undo

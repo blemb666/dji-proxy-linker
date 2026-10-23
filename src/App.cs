@@ -196,7 +196,7 @@ namespace DjiProxyLinker
         async void PickFolders()
         {
             if (busy) return;
-            var picked = FolderPicker.Show(Window, "Выберите папки с видео DJI");
+            var picked = FolderPicker.Show(Window, "Выберите папки с видео DJI или Sony");
             if (picked.Count > 0) await AddPaths(picked);
         }
 
@@ -259,15 +259,15 @@ namespace DjiProxyLinker
             switch (CurrentMode)
             {
                 case Mode.Copy:
-                    modeHint.Text = "LRF остаются на месте, в папке Proxy создаются копии .MP4";
+                    modeHint.Text = "Прокси DJI (.LRF) и Sony (SUB) остаются на месте, в папке Proxy создаются копии";
                     run.Content = "Создать прокси";
                     break;
                 case Mode.Undo:
-                    modeHint.Text = "Файлы из папок Proxy возвращаются обратно в .LRF";
+                    modeHint.Text = "Файлы из папок Proxy возвращаются обратно: в .LRF (DJI) или в SUB (Sony)";
                     run.Content = "Откатить";
                     break;
                 default:
-                    modeHint.Text = "LRF переносятся в папку Proxy как .MP4 — мгновенно и без лишнего места";
+                    modeHint.Text = "Прокси DJI (.LRF) и Sony (SUB) переносятся в папку Proxy — мгновенно";
                     run.Content = "Создать прокси";
                     break;
             }
@@ -298,10 +298,9 @@ namespace DjiProxyLinker
 
             int n = result.Jobs.Count, f = result.FolderCount;
             if (n == 0)
-                dropTitle.Text = mode == Mode.Undo ? "Папки Proxy не найдены" : "Файлы LRF не найдены";
+                dropTitle.Text = mode == Mode.Undo ? "Папки Proxy не найдены" : "Прокси DJI или Sony не найдены";
             else
-                dropTitle.Text = string.Format("Найдено {0} {1} в {2} {3}", n,
-                    mode == Mode.Undo ? "прокси" : Plural(n, "файл", "файла", "файлов") + " LRF",
+                dropTitle.Text = string.Format("Найдено {0} прокси в {1} {2}", n,
                     f, Plural(f, "папке", "папках", "папках"));
 
             run.IsEnabled = n > 0;
@@ -324,7 +323,7 @@ namespace DjiProxyLinker
             var timer = Stopwatch.StartNew();
             IProgress<Tuple<Job, Outcome, string>> reporter = new Progress<Tuple<Job, Outcome, string>>(r =>
             {
-                string title = Linker.Title(r.Item1, mode);
+                string title = r.Item1.Title;
                 switch (r.Item2)
                 {
                     case Outcome.Done: done++; AddLog(GlyphOk, title, r.Item3, "Ok"); break;

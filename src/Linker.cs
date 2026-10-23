@@ -1,9 +1,14 @@
-// Ядро: поиск LRF и перенос их в Proxy\*.MP4 (и обратно). Ничего не знает про UI.
+// Ядро: поиск готовых прокси камер и перенос их туда, где их ищет DaVinci Resolve —
+// в подпапку Proxy рядом с исходниками, под тем же именем. Ничего не знает про UI.
+//
+//   DJI:  DJI_0001.LRF          → Proxy\DJI_0001.MP4        (расширение как у исходника)
+//   Sony: SUB\C0001S03.MP4      → CLIP\Proxy\C0001.MP4      (исходник лежит в соседней CLIP)
 
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace DjiProxyLinker
 {
@@ -15,6 +20,8 @@ namespace DjiProxyLinker
     {
         public string Source;
         public string Target;
+        public string Title;    // как показать исходный файл в журнале
+        public string Display;  // как показать, куда он переносится
     }
 
     public sealed class ScanResult
@@ -35,7 +42,10 @@ namespace DjiProxyLinker
     public static class Linker
     {
         public const string ProxyDirName = "Proxy";
+        const string SonyClipDir = "CLIP", SonySubDir = "SUB", SonyProxySuffix = "S03";
         static readonly string[] VideoExts = { ".MP4", ".MOV" };
+        static readonly string[] SonyClipExts = { ".MP4", ".MXF", ".MOV" };
+        static readonly Regex SonyProxyName = new Regex(@"^(.+)" + SonyProxySuffix + @"\.MP4$", RegexOptions.IgnoreCase);
         const FileAttributes HiddenSystem = FileAttributes.Hidden | FileAttributes.System;
 
         public static ScanResult Scan(IEnumerable<string> paths, Mode mode)
@@ -74,47 +84,105 @@ namespace DjiProxyLinker
             }
         }
 
-        // explicitFile: файл перетащили руками — тогда для исходника .MP4 ищем рядом его .LRF
+        // explicitFile: файл перетащили руками — тогда для исходника ищем его прокси
         static void AddFile(string file, Mode mode, bool explicitFile, ScanResult result, HashSet<string> seen)
         {
-            string dir = Path.GetDirectoryName(file);
-            bool inProxy = IsProxyDir(dir);
-            Job job = null;
+            // "._имя" — служебные файлы macOS на картах exFAT, к видео отношения не имеют
+            if (Path.GetFileName(file).StartsWith("._", StringComparison.Ordinal)) return;
 
-            if (mode == Mode.Undo)
-            {
-                if (inProxy && IsVideo(file))
-                    job = new Job
-                    {
-                        Source = file,
-                        Target = Path.Combine(Path.GetDirectoryName(dir), Path.GetFileNameWithoutExtension(file) + ".LRF")
-                    };
-            }
-            else if (!inProxy)
-            {
-                string lrf = null;
-                if (HasExt(file, ".LRF")) lrf = file;
-                else if (explicitFile && IsVideo(file))
-                {
-                    string candidate = Path.ChangeExtension(file, ".LRF");
-                    if (File.Exists(candidate)) lrf = candidate;
-                }
-
-                if (lrf != null)
-                {
-                    string name = Path.GetFileNameWithoutExtension(lrf);
-                    job = new Job { Source = lrf, Target = Path.Combine(dir, ProxyDirName, name + SourceExt(dir, name)) };
-                }
-            }
-
+            Job job = mode == Mode.Undo ? UndoJob(file) : LinkJob(file, explicitFile);
             if (job != null && seen.Add(job.Source)) result.Jobs.Add(job);
+        }
+
+        static Job LinkJob(string file, bool explicitFile)
+        {
+            string dir = Path.GetDirectoryName(file);
+            if (IsDir(dir, ProxyDirName)) return null;
+
+            if (HasExt(file, ".LRF")) return DjiJob(file);
+            if (IsDir(dir, SonySubDir)) return SonyJob(file);
+            if (!explicitFile || !IsVideo(file, SonyClipExts)) return null;
+
+            // Перетащили исходник: DJI — LRF рядом, Sony — SUB\<имя>S03.MP4 рядом с CLIP
+            string lrf = Path.ChangeExtension(file, ".LRF");
+            if (File.Exists(lrf)) return DjiJob(lrf);
+            if (IsDir(dir, SonyClipDir))
+            {
+                string sub = Path.Combine(Path.GetDirectoryName(dir), SonySubDir,
+                                          Path.GetFileNameWithoutExtension(file) + SonyProxySuffix + ".MP4");
+                if (File.Exists(sub)) return SonyJob(sub);
+            }
+            return null;
+        }
+
+        static Job DjiJob(string lrf)
+        {
+            string dir = Path.GetDirectoryName(lrf);
+            string name = Path.GetFileNameWithoutExtension(lrf) + SourceExt(dir, Path.GetFileNameWithoutExtension(lrf));
+            return new Job
+            {
+                Source = lrf,
+                Target = Path.Combine(dir, ProxyDirName, name),
+                Title = Path.GetFileName(lrf),
+                Display = Path.Combine(ProxyDirName, name)
+            };
+        }
+
+        // Берём прокси Sony только если в соседней CLIP есть исходник с тем же именем
+        static Job SonyJob(string proxy)
+        {
+            var match = SonyProxyName.Match(Path.GetFileName(proxy));
+            if (!match.Success) return null;
+
+            string clipName = match.Groups[1].Value;
+            string clipDir = FindSibling(Path.GetDirectoryName(proxy), SonyClipDir);
+            if (clipDir == null || !SonyClipExts.Any(ext => File.Exists(Path.Combine(clipDir, clipName + ext)))) return null;
+
+            string name = clipName + Path.GetExtension(proxy);
+            return new Job
+            {
+                Source = proxy,
+                Target = Path.Combine(clipDir, ProxyDirName, name),
+                Title = Path.Combine(SonySubDir, Path.GetFileName(proxy)),
+                Display = Path.Combine(Path.GetFileName(clipDir), ProxyDirName, name)
+            };
+        }
+
+        static Job UndoJob(string file)
+        {
+            string proxyDir = Path.GetDirectoryName(file);
+            if (!IsDir(proxyDir, ProxyDirName) || !IsVideo(file, VideoExts)) return null;
+
+            string owner = Path.GetDirectoryName(proxyDir);
+            string name = Path.GetFileNameWithoutExtension(file);
+            string subDir = IsDir(owner, SonyClipDir) ? FindSibling(owner, SonySubDir) : null;
+
+            if (subDir != null)
+            {
+                string target = name + SonyProxySuffix + Path.GetExtension(file);
+                return new Job
+                {
+                    Source = file,
+                    Target = Path.Combine(subDir, target),
+                    Title = Path.Combine(Path.GetFileName(owner), ProxyDirName, Path.GetFileName(file)),
+                    Display = Path.Combine(Path.GetFileName(subDir), target)
+                };
+            }
+
+            return new Job
+            {
+                Source = file,
+                Target = Path.Combine(owner, name + ".LRF"),
+                Title = Path.Combine(ProxyDirName, Path.GetFileName(file)),
+                Display = name + ".LRF"
+            };
         }
 
         public static Outcome Execute(Job job, Mode mode, out string detail)
         {
             if (File.Exists(job.Target))
             {
-                detail = "уже есть: " + Describe(job, mode);
+                detail = "уже есть: " + job.Display;
                 return Outcome.Skipped;
             }
 
@@ -126,7 +194,7 @@ namespace DjiProxyLinker
 
                 if (mode == Mode.Undo) DeleteIfEmpty(Path.GetDirectoryName(job.Source));
 
-                detail = "→ " + Describe(job, mode);
+                detail = "→ " + job.Display;
                 return Outcome.Done;
             }
             catch (Exception ex)
@@ -134,21 +202,6 @@ namespace DjiProxyLinker
                 detail = ex.Message;
                 return Outcome.Failed;
             }
-        }
-
-        // Как показать файл в журнале: "DJI_..._D.LRF" или "Proxy\DJI_..._D.MP4"
-        public static string Title(Job job, Mode mode)
-        {
-            return mode == Mode.Undo
-                ? Path.Combine(ProxyDirName, Path.GetFileName(job.Source))
-                : Path.GetFileName(job.Source);
-        }
-
-        static string Describe(Job job, Mode mode)
-        {
-            return mode == Mode.Undo
-                ? Path.GetFileName(job.Target)
-                : Path.Combine(ProxyDirName, Path.GetFileName(job.Target));
         }
 
         // Расширение берём как у исходника (MP4/MOV), чтобы Resolve точно сматчил имя
@@ -162,6 +215,20 @@ namespace DjiProxyLinker
             return ".MP4";
         }
 
+        // Соседняя папка с таким именем (без учёта регистра), например SUB → CLIP
+        static string FindSibling(string dir, string name)
+        {
+            string parent = Path.GetDirectoryName(dir);
+            if (parent == null) return null;
+            try
+            {
+                return Directory.EnumerateDirectories(parent)
+                                .FirstOrDefault(d => IsDir(d, name));
+            }
+            catch (IOException) { return null; }
+            catch (UnauthorizedAccessException) { return null; }
+        }
+
         static void DeleteIfEmpty(string dir)
         {
             try
@@ -172,14 +239,14 @@ namespace DjiProxyLinker
             catch (UnauthorizedAccessException) { }
         }
 
-        static bool IsProxyDir(string dir)
+        static bool IsDir(string dir, string name)
         {
-            return string.Equals(Path.GetFileName(dir), ProxyDirName, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(Path.GetFileName(dir), name, StringComparison.OrdinalIgnoreCase);
         }
 
-        static bool IsVideo(string f)
+        static bool IsVideo(string f, string[] exts)
         {
-            return VideoExts.Any(ext => HasExt(f, ext));
+            return exts.Any(ext => HasExt(f, ext));
         }
 
         static bool HasExt(string f, string ext)
