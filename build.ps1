@@ -77,6 +77,7 @@ using System.Reflection;
         "/out:$out" "/win32icon:$ico" `
         "/lib:$wpf" /r:PresentationFramework.dll /r:PresentationCore.dll /r:WindowsBase.dll /r:System.Xaml.dll `
         "/resource:$(Join-Path $root 'src\MainWindow.xaml'),MainWindow.xaml" `
+        "/resource:$(Join-Path $root 'src\LinkLocalProxies.lua'),LinkLocalProxies.lua" `
         (Join-Path $root 'src\*.cs') $assemblyInfo
     if ($LASTEXITCODE -ne 0) { throw "csc завершился с ошибкой $LASTEXITCODE" }
     Write-Host "OK: $out v$Version ($([math]::Round((Get-Item $out).Length / 1KB)) KB)"

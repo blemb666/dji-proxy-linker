@@ -4,7 +4,7 @@
 //   DjiProxyLinker.exe [--copy | --undo] [--run] <папки/файлы...>
 //   (пункт контекстного меню папок, который ставит установщик, вызывает "--run <папка>")
 //   --run                      сразу запустить обработку без нажатия кнопки
-//   --screenshot <png> [empty] отрендерить окно в PNG (для README)
+//   --screenshot <png> [empty|sync] отрендерить окно в PNG (для README)
 
 using System;
 using System.Collections.Generic;
@@ -47,8 +47,7 @@ namespace DjiProxyLinker
             var paths = new List<string>();
             var mode = Mode.Move;
             bool autoRun = false;
-            string screenshot = null;
-            bool screenshotEmpty = false;
+            string screenshot = null, screenshotState = "done";
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -59,7 +58,7 @@ namespace DjiProxyLinker
                     case "--run": autoRun = true; break;
                     case "--screenshot":
                         screenshot = i + 1 < args.Length ? args[++i] : "screenshot.png";
-                        if (i + 1 < args.Length && args[i + 1] == "empty") { screenshotEmpty = true; i++; }
+                        if (i + 1 < args.Length && (args[i + 1] == "empty" || args[i + 1] == "sync")) screenshotState = args[++i];
                         break;
                     default: paths.Add(args[i]); break;
                 }
@@ -72,7 +71,7 @@ namespace DjiProxyLinker
             var controller = new MainWindowController(window, mode);
             if (screenshot != null)
             {
-                controller.Screenshot(screenshot, screenshotEmpty);
+                controller.Screenshot(screenshot, screenshotState);
                 return;
             }
 
@@ -89,7 +88,7 @@ namespace DjiProxyLinker
 
     sealed class MainWindowController
     {
-        const string GlyphOk = "\uE73E", GlyphSkip = "\uE738", GlyphError = "\uE7BA", GlyphInfo = "\uE946";
+        public const string GlyphOk = "\uE73E", GlyphSkip = "\uE738", GlyphError = "\uE7BA", GlyphInfo = "\uE946";
 
         public readonly Window Window;
         readonly ObservableCollection<LogEntry> log = new ObservableCollection<LogEntry>();
@@ -106,10 +105,20 @@ namespace DjiProxyLinker
         readonly ProgressBar progress;
         readonly ItemsControl logList;
         readonly FrameworkElement logEmpty;
+        readonly CheckBox sonyFlatten;
+        readonly RadioButton tabSync;
+        readonly FrameworkElement pageLink, pageSync;
+        readonly Settings settings = Settings.Load();
+        readonly SyncTab sync;
 
         public MainWindowController(Window window, Mode mode)
         {
             Window = window;
+            sync = new SyncTab(window, settings);
+            sonyFlatten = Find<CheckBox>("SonyFlatten");
+            tabSync = Find<RadioButton>("TabSync");
+            pageLink = Find<FrameworkElement>("PageLink");
+            pageSync = Find<FrameworkElement>("PageSync");
             dropZone = Find<Border>("DropZone");
             dropTitle = Find<TextBlock>("DropTitle");
             dropHint = Find<TextBlock>("DropHint");
@@ -150,16 +159,46 @@ namespace DjiProxyLinker
             foreach (var rb in new[] { modeMove, modeCopy, modeUndo })
                 rb.Checked += (s, e) => OnModeChanged();
 
+            sonyFlatten.IsChecked = settings.SonyFlatten;
+            sonyFlatten.Checked += (s, e) => OnFlattenChanged();
+            sonyFlatten.Unchecked += (s, e) => OnFlattenChanged();
+            Find<RadioButton>("TabLink").Checked += (s, e) => ShowSyncPage(false);
+            tabSync.Checked += (s, e) => ShowSyncPage(true);
+
             UpdateModeText();
             Reset();
         }
 
         T Find<T>(string name) where T : class
         {
-            var element = Window.FindName(name) as T;
+            return FindIn<T>(Window, name);
+        }
+
+        public static T FindIn<T>(Window window, string name) where T : class
+        {
+            var element = window.FindName(name) as T;
             if (element == null)
                 throw new InvalidOperationException("MainWindow.xaml: нет элемента " + name + " (" + typeof(T).Name + ")");
             return element;
+        }
+
+        bool SyncPageVisible
+        {
+            get { return tabSync.IsChecked == true; }
+        }
+
+        void ShowSyncPage(bool show)
+        {
+            pageLink.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+            pageSync.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        async void OnFlattenChanged()
+        {
+            settings.SonyFlatten = sonyFlatten.IsChecked == true;
+            settings.Save();
+            finished = false;
+            if (paths.Count > 0) await Rescan();
         }
 
         Mode CurrentMode
@@ -171,9 +210,9 @@ namespace DjiProxyLinker
 
         void OnDragOver(object sender, DragEventArgs e)
         {
-            bool ok = !busy && e.Data.GetDataPresent(DataFormats.FileDrop);
+            bool ok = !busy && !sync.Busy && e.Data.GetDataPresent(DataFormats.FileDrop);
             e.Effects = ok ? DragDropEffects.Link : DragDropEffects.None;
-            if (ok) dropZone.Tag = "Over";
+            if (ok && !SyncPageVisible) dropZone.Tag = "Over";
             e.Handled = true;
         }
 
@@ -189,8 +228,9 @@ namespace DjiProxyLinker
         {
             RestoreDropTag();
             var files = e.Data.GetData(DataFormats.FileDrop) as string[];
-            if (busy || files == null) return;
-            await AddPaths(files);
+            if (busy || files == null || files.Length == 0) return;
+            if (SyncPageVisible) sync.SetSource(files[0]); // на вкладке «С сервера» папка становится источником
+            else await AddPaths(files);
         }
 
         async void PickFolders()
@@ -202,6 +242,7 @@ namespace DjiProxyLinker
 
         void OnKeyDown(object sender, KeyEventArgs e)
         {
+            if (SyncPageVisible) return;
             if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control) PickFolders();
             else if (e.Key == Key.Enter && run.IsEnabled) Run();
             else if (e.Key == Key.Escape && !busy) Reset();
@@ -286,7 +327,8 @@ namespace DjiProxyLinker
             run.IsEnabled = false;
             clear.IsEnabled = true;
 
-            var result = await Task.Run(() => Linker.Scan(snapshot, mode));
+            bool flatten = sonyFlatten.IsChecked == true;
+            var result = await Task.Run(() => Linker.Scan(snapshot, mode, flatten));
             if (token != scanToken) return;
 
             scan = result;
@@ -375,6 +417,8 @@ namespace DjiProxyLinker
             clear.IsEnabled = enabled;
             modeMove.IsEnabled = modeCopy.IsEnabled = modeUndo.IsEnabled = enabled;
             dropZone.IsEnabled = enabled;
+            sonyFlatten.IsEnabled = enabled;
+            tabSync.IsEnabled = enabled;
         }
 
         void SetCounters(int d, int s, int f)
@@ -406,7 +450,7 @@ namespace DjiProxyLinker
             if (logEmpty != null) logEmpty.Visibility = log.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
 
-        static ScrollViewer FindScrollViewer(DependencyObject element)
+        public static ScrollViewer FindScrollViewer(DependencyObject element)
         {
             for (var p = VisualTreeHelper.GetParent(element); p != null; p = VisualTreeHelper.GetParent(p))
                 if (p is ScrollViewer) return (ScrollViewer)p;
@@ -433,7 +477,7 @@ namespace DjiProxyLinker
             return string.Join("  ·  ", names.Take(4)) + (list.Length > 4 ? "  ·  …" : "");
         }
 
-        static string Plural(int n, string one, string few, string many)
+        public static string Plural(int n, string one, string few, string many)
         {
             n = Math.Abs(n) % 100;
             int last = n % 10;
@@ -443,7 +487,7 @@ namespace DjiProxyLinker
             return many;
         }
 
-        static void OpenUrl(string url)
+        public static void OpenUrl(string url)
         {
             try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
             catch (Exception) { }
@@ -451,7 +495,7 @@ namespace DjiProxyLinker
 
         // ---------- Скриншот для README ----------
 
-        public void Screenshot(string file, bool empty)
+        public void Screenshot(string file, string state)
         {
             Window.WindowStartupLocation = WindowStartupLocation.Manual;
             Window.Left = -20000;
@@ -459,7 +503,12 @@ namespace DjiProxyLinker
             Window.ShowInTaskbar = false;
             Window.Show();
 
-            if (!empty)
+            if (state == "sync")
+            {
+                tabSync.IsChecked = true;
+                sync.FillDemo();
+            }
+            else if (state != "empty")
             {
                 paths.Add(@"D:\Footage\2026-10-22 Pocket 3");
                 dropZone.Tag = "Filled";

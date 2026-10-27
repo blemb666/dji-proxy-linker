@@ -3,11 +3,17 @@
 //
 //   DJI:  DJI_0001.LRF          → Proxy\DJI_0001.MP4        (расширение как у исходника)
 //   Sony: SUB\C0001S03.MP4      → CLIP\Proxy\C0001.MP4      (исходник лежит в соседней CLIP)
+//
+// Sony с «поднятием» (sonyFlatten) — раскладка для сервера, папка камеры становится плоской:
+//   FX30\CLIP\C0001.MP4, C0001M01.XML  → FX30\C0001.MP4, FX30\C0001M01.XML
+//   FX30\SUB\C0001S03.MP4               → FX30\Proxy\C0001.MP4
+// Каждое перемещение записывается в скрытый журнал FX30\.proxylinker-journal.txt — по нему работает откат.
 
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace DjiProxyLinker
@@ -20,8 +26,12 @@ namespace DjiProxyLinker
     {
         public string Source;
         public string Target;
-        public string Title;    // как показать исходный файл в журнале
-        public string Display;  // как показать, куда он переносится
+        public string Title;       // как показать исходный файл в журнале
+        public string Display;     // как показать, куда он переносится
+        public string CleanupDir;  // удалить эту папку, если после переноса она опустела
+        public bool ForceMove;     // переносить даже в режиме «Копировать» (оригиналы Sony из CLIP)
+        public string Journal;     // журнал «поднятия» Sony, куда записать / откуда стереть строку
+        public string JournalLine;
     }
 
     public sealed class ScanResult
@@ -42,21 +52,22 @@ namespace DjiProxyLinker
     public static class Linker
     {
         public const string ProxyDirName = "Proxy";
+        public const string JournalName = ".proxylinker-journal.txt";
         const string SonyClipDir = "CLIP", SonySubDir = "SUB", SonyProxySuffix = "S03";
         static readonly string[] VideoExts = { ".MP4", ".MOV" };
         static readonly string[] SonyClipExts = { ".MP4", ".MXF", ".MOV" };
         static readonly Regex SonyProxyName = new Regex(@"^(.+)" + SonyProxySuffix + @"\.MP4$", RegexOptions.IgnoreCase);
         const FileAttributes HiddenSystem = FileAttributes.Hidden | FileAttributes.System;
 
-        public static ScanResult Scan(IEnumerable<string> paths, Mode mode)
+        public static ScanResult Scan(IEnumerable<string> paths, Mode mode, bool sonyFlatten)
         {
             var result = new ScanResult();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var p in paths)
             {
-                if (Directory.Exists(p)) Walk(Path.GetFullPath(p), mode, result, seen);
-                else if (File.Exists(p)) AddFile(Path.GetFullPath(p), mode, true, result, seen);
+                if (Directory.Exists(p)) Walk(Path.GetFullPath(p), mode, sonyFlatten, result, seen);
+                else if (File.Exists(p)) AddFile(Path.GetFullPath(p), mode, false, true, result, seen);
                 else result.Errors.Add("Не найдено: " + p);
             }
 
@@ -65,7 +76,7 @@ namespace DjiProxyLinker
         }
 
         // Обход без рекурсии и без падения на недоступных папках (корень SD-карты, System Volume Information)
-        static void Walk(string root, Mode mode, ScanResult result, HashSet<string> seen)
+        static void Walk(string root, Mode mode, bool sonyFlatten, ScanResult result, HashSet<string> seen)
         {
             var stack = new Stack<string>();
             stack.Push(root);
@@ -75,7 +86,7 @@ namespace DjiProxyLinker
                 try
                 {
                     foreach (var f in Directory.EnumerateFiles(dir))
-                        AddFile(f, mode, false, result, seen);
+                        AddFile(f, mode, sonyFlatten, false, result, seen);
                     foreach (var sub in Directory.EnumerateDirectories(dir))
                         if ((File.GetAttributes(sub) & HiddenSystem) != HiddenSystem) stack.Push(sub);
                 }
@@ -85,12 +96,22 @@ namespace DjiProxyLinker
         }
 
         // explicitFile: файл перетащили руками — тогда для исходника ищем его прокси
-        static void AddFile(string file, Mode mode, bool explicitFile, ScanResult result, HashSet<string> seen)
+        static void AddFile(string file, Mode mode, bool sonyFlatten, bool explicitFile, ScanResult result, HashSet<string> seen)
         {
+            string name = Path.GetFileName(file);
             // "._имя" — служебные файлы macOS на картах exFAT, к видео отношения не имеют
-            if (Path.GetFileName(file).StartsWith("._", StringComparison.Ordinal)) return;
+            if (name.StartsWith("._", StringComparison.Ordinal)) return;
 
-            Job job = mode == Mode.Undo ? UndoJob(file) : LinkJob(file, explicitFile);
+            if (mode == Mode.Undo && name.Equals(JournalName, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var undo in JournalUndoJobs(file))
+                    if (seen.Add(undo.Source)) result.Jobs.Add(undo);
+                return;
+            }
+
+            Job job = mode == Mode.Undo ? UndoJob(file)
+                    : sonyFlatten && !explicitFile ? FlattenJob(file) ?? LinkJob(file, false)
+                    : LinkJob(file, explicitFile);
             if (job != null && seen.Add(job.Source)) result.Jobs.Add(job);
         }
 
@@ -131,12 +152,9 @@ namespace DjiProxyLinker
         // Берём прокси Sony только если в соседней CLIP есть исходник с тем же именем
         static Job SonyJob(string proxy)
         {
-            var match = SonyProxyName.Match(Path.GetFileName(proxy));
-            if (!match.Success) return null;
-
-            string clipName = match.Groups[1].Value;
+            string clipName = SonyClipName(proxy);
             string clipDir = FindSibling(Path.GetDirectoryName(proxy), SonyClipDir);
-            if (clipDir == null || !SonyClipExts.Any(ext => File.Exists(Path.Combine(clipDir, clipName + ext)))) return null;
+            if (clipName == null || clipDir == null || !HasClip(clipDir, clipName)) return null;
 
             string name = clipName + Path.GetExtension(proxy);
             return new Job
@@ -148,12 +166,53 @@ namespace DjiProxyLinker
             };
         }
 
+        // «Поднятие» Sony: работает только в папке камеры, где рядом лежат CLIP и SUB
+        static Job FlattenJob(string file)
+        {
+            string dir = Path.GetDirectoryName(file);
+            bool inClip = IsDir(dir, SonyClipDir), inSub = IsDir(dir, SonySubDir);
+            if (!inClip && !inSub) return null;
+
+            string camera = Path.GetDirectoryName(dir);
+            string clipDir = inClip ? dir : FindSibling(dir, SonyClipDir);
+            string subDir = inSub ? dir : FindSibling(dir, SonySubDir);
+            if (clipDir == null || subDir == null) return null;
+
+            string from, to;
+            if (inClip)
+            {
+                from = Path.Combine(Path.GetFileName(clipDir), Path.GetFileName(file));
+                to = Path.GetFileName(file);
+            }
+            else
+            {
+                string clipName = SonyClipName(file);
+                if (clipName == null || !HasClip(clipDir, clipName)) return null;
+                from = Path.Combine(Path.GetFileName(subDir), Path.GetFileName(file));
+                to = Path.Combine(ProxyDirName, clipName + Path.GetExtension(file));
+            }
+
+            return new Job
+            {
+                Source = file,
+                Target = Path.Combine(camera, to),
+                Title = from,
+                Display = Path.Combine(Path.GetFileName(camera), to),
+                CleanupDir = dir,
+                ForceMove = inClip,
+                Journal = Path.Combine(camera, JournalName),
+                JournalLine = from + "\t" + to
+            };
+        }
+
         static Job UndoJob(string file)
         {
             string proxyDir = Path.GetDirectoryName(file);
             if (!IsDir(proxyDir, ProxyDirName) || !IsVideo(file, VideoExts)) return null;
 
             string owner = Path.GetDirectoryName(proxyDir);
+            if (File.Exists(Path.Combine(owner, JournalName))) return null; // откатывается по журналу
+
             string name = Path.GetFileNameWithoutExtension(file);
             string subDir = IsDir(owner, SonyClipDir) ? FindSibling(owner, SonySubDir) : null;
 
@@ -165,7 +224,8 @@ namespace DjiProxyLinker
                     Source = file,
                     Target = Path.Combine(subDir, target),
                     Title = Path.Combine(Path.GetFileName(owner), ProxyDirName, Path.GetFileName(file)),
-                    Display = Path.Combine(Path.GetFileName(subDir), target)
+                    Display = Path.Combine(Path.GetFileName(subDir), target),
+                    CleanupDir = proxyDir
                 };
             }
 
@@ -174,8 +234,39 @@ namespace DjiProxyLinker
                 Source = file,
                 Target = Path.Combine(owner, name + ".LRF"),
                 Title = Path.Combine(ProxyDirName, Path.GetFileName(file)),
-                Display = name + ".LRF"
+                Display = name + ".LRF",
+                CleanupDir = proxyDir
             };
+        }
+
+        // Откат «поднятия»: каждая строка журнала «откуда<TAB>куда» превращается в обратный перенос
+        static List<Job> JournalUndoJobs(string journal)
+        {
+            var jobs = new List<Job>();
+            string camera = Path.GetDirectoryName(journal);
+            string[] lines;
+            try { lines = File.ReadAllLines(journal, Encoding.UTF8); }
+            catch (IOException) { return jobs; }
+            catch (UnauthorizedAccessException) { return jobs; }
+
+            foreach (var line in lines.Reverse())
+            {
+                var parts = line.Split('\t');
+                if (parts.Length != 2) continue;
+                string movedTo = Path.Combine(camera, parts[1]);
+                string movedDir = Path.GetDirectoryName(movedTo);
+                jobs.Add(new Job
+                {
+                    Source = movedTo,
+                    Target = Path.Combine(camera, parts[0]),
+                    Title = Path.Combine(Path.GetFileName(camera), parts[1]),
+                    Display = parts[0],
+                    CleanupDir = string.Equals(movedDir, camera, StringComparison.OrdinalIgnoreCase) ? null : movedDir,
+                    Journal = journal,
+                    JournalLine = line
+                });
+            }
+            return jobs;
         }
 
         public static Outcome Execute(Job job, Mode mode, out string detail)
@@ -189,10 +280,16 @@ namespace DjiProxyLinker
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(job.Target));
-                if (mode == Mode.Copy) File.Copy(job.Source, job.Target);
+                bool copy = mode == Mode.Copy && !job.ForceMove;
+                if (copy) File.Copy(job.Source, job.Target);
                 else File.Move(job.Source, job.Target);
 
-                if (mode == Mode.Undo) DeleteIfEmpty(Path.GetDirectoryName(job.Source));
+                if (job.Journal != null)
+                {
+                    if (mode == Mode.Undo) RemoveJournalLine(job.Journal, job.JournalLine);
+                    else if (!copy) AppendJournalLine(job.Journal, job.JournalLine);
+                }
+                if (job.CleanupDir != null && !copy) DeleteIfEmpty(job.CleanupDir);
 
                 detail = "→ " + job.Display;
                 return Outcome.Done;
@@ -202,6 +299,39 @@ namespace DjiProxyLinker
                 detail = ex.Message;
                 return Outcome.Failed;
             }
+        }
+
+        static void AppendJournalLine(string journal, string line)
+        {
+            bool created = !File.Exists(journal);
+            if (!created) File.SetAttributes(journal, FileAttributes.Normal);
+            File.AppendAllText(journal, line + Environment.NewLine, new UTF8Encoding(false));
+            File.SetAttributes(journal, FileAttributes.Hidden);
+        }
+
+        static void RemoveJournalLine(string journal, string line)
+        {
+            if (!File.Exists(journal)) return;
+            var rest = File.ReadAllLines(journal, Encoding.UTF8).ToList();
+            rest.Remove(line);
+            File.SetAttributes(journal, FileAttributes.Normal);
+            if (rest.Count == 0) File.Delete(journal);
+            else
+            {
+                File.WriteAllLines(journal, rest, new UTF8Encoding(false));
+                File.SetAttributes(journal, FileAttributes.Hidden);
+            }
+        }
+
+        static string SonyClipName(string proxy)
+        {
+            var match = SonyProxyName.Match(Path.GetFileName(proxy));
+            return match.Success ? match.Groups[1].Value : null;
+        }
+
+        static bool HasClip(string clipDir, string clipName)
+        {
+            return SonyClipExts.Any(ext => File.Exists(Path.Combine(clipDir, clipName + ext)));
         }
 
         // Расширение берём как у исходника (MP4/MOV), чтобы Resolve точно сматчил имя
